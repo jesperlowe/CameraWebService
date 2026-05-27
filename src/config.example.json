@@ -1,26 +1,53 @@
 {
   "auth": {
     "username": "admin",
-    "password_hash": "<bcrypt hash>",
+    "password_hash": "<bcrypt hash af adgangskoden>",
     "force_password_change": true
   },
-  "camera": {
-    "rtsp_url": "rtsps://camera.example/live",
-    "capture_interval_minutes": 15
-  },
+  "cameras": [
+    {
+      "id": 1,
+      "name": "Kamera 1",
+      "rtsp_url": "rtsp://bruger:kode@192.168.1.100:554/stream",
+      "enabled": true,
+      "filename": "camera1.jpg",
+      "capture_interval_minutes": 15,
+      "pause_schedule": []
+    }
+  ],
+  "capture_interval_minutes": 15,
   "upload": {
-    "method": "sftp",
+    "method": "ftp",
+    "public_base_url": "https://example.com/camera",
     "sftp": {
       "host": "example.com",
-      "port": 22,
-      "username": "uploader",
-      "password": "",
+      "port": 21,
+      "username": "ftpbruger",
+      "password": "hemmeligt",
       "private_key_path": "",
-      "remote_path": "/public_html/camera/latest.jpg"
+      "remote_dir": "/public_html/camera"
     },
     "wordpress": {
       "endpoint": "https://site.example/wp-json/camera-snapshot/v1/upload",
       "bearer_token": ""
     }
-  }
+  },
+  "ntp": {
+    "enabled": true,
+    "server": "pool.ntp.org"
+  },
+  "dark_periods": [
+    {
+      "id": 1,
+      "label": "Nat",
+      "day": "all",
+      "start": "22:00",
+      "end": "06:00",
+      "enabled": false
+    }
+  ],
+  "timezone": "Europe/Copenhagen",
+  "allowed_hosts": ["*"],
+  "language": "da",
+  "healthchecks_url": ""
 }

@@ -652,6 +652,22 @@ def scheduler_loop():
 
             tz = cfg.timezone or "Europe/Copenhagen"
 
+            # Check dark/pause state for every enabled camera (independent of fire timer)
+            # so the dashboard always reflects current pause status.
+            any_dark = False
+            dark_reason_first = ""
+            for cam in cfg.cameras:
+                if not cam.get("enabled") or not cam.get("rtsp_url"):
+                    continue
+                cam_schedule = cam.get("pause_schedule") or cfg.dark_periods
+                dark, reason = is_dark_time(cam_schedule, tz)
+                if dark:
+                    any_dark = True
+                    if not dark_reason_first:
+                        dark_reason_first = reason
+            state["dark"]        = any_dark
+            state["dark_reason"] = dark_reason_first
+
             for cam in cfg.cameras:
                 if not cam.get("enabled"):
                     continue

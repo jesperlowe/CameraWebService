@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+from src.config import WEEKDAYS
 
 
 def _parse_minutes(t: str) -> int:

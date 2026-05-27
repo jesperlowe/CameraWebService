@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.config import (
-    AppConfig, AuthConfig, NtpConfig,
-    SFTPConfig, UploadConfig, WordpressConfig,
-    hash_password, load_config,
+    AppConfig, AuthConfig, ConnectionConfig, NtpConfig,
+    UploadConfig, WordpressConfig,
+    hash_password,
 )
 
 _VERSION = "3"
@@ -71,9 +71,14 @@ def config_to_xml(cfg: AppConfig) -> bytes:
             _set(p_el, "end",     p.get("end",   "06:00"))
             _set(p_el, "enabled", p.get("enabled", True))
 
+    # Language / misc
+    _set(root, "language",         cfg.language)
+    _set(root, "healthchecks_url", cfg.healthchecks_url)
+
     # Upload
     upload_el = ET.SubElement(root, "upload")
-    _set(upload_el, "method", cfg.upload.method)
+    _set(upload_el, "method",           cfg.upload.method)
+    _set(upload_el, "public_base_url",  cfg.upload.public_base_url)
     sftp_el = ET.SubElement(upload_el, "sftp")
     _set(sftp_el, "host",             cfg.upload.sftp.host)
     _set(sftp_el, "port",             cfg.upload.sftp.port)
@@ -183,13 +188,18 @@ def xml_to_config(xml_bytes: bytes) -> AppConfig:
         cameras = [{"id": 1, "name": "Kamera 1", "rtsp_url": "", "enabled": True,
                     "filename": "camera1.jpg", "capture_interval_minutes": 15, "pause_schedule": []}]
 
+    # Language / misc
+    language         = txt(root, "language", "da")
+    healthchecks_url = txt(root, "healthchecks_url", "")
+
     # Upload
     upload_el  = root.find("upload")
     sftp_el    = upload_el.find("sftp")    if upload_el is not None else None
     wp_el      = upload_el.find("wordpress") if upload_el is not None else None
     upload = UploadConfig(
-        method    = txt(upload_el, "method", "ftp") if upload_el is not None else "ftp",
-        sftp      = SFTPConfig(
+        method          = txt(upload_el, "method", "ftp") if upload_el is not None else "ftp",
+        public_base_url = txt(upload_el, "public_base_url", "") if upload_el is not None else "",
+        sftp      = ConnectionConfig(
             host            = txt(sftp_el, "host")            if sftp_el is not None else "",
             port            = _int(txt(sftp_el, "port", "21"), 21) if sftp_el is not None else 21,
             username        = txt(sftp_el, "username")        if sftp_el is not None else "",
@@ -231,4 +241,6 @@ def xml_to_config(xml_bytes: bytes) -> AppConfig:
         dark_periods=dark_periods,
         timezone=timezone,
         allowed_hosts=allowed_hosts,
+        language=language,
+        healthchecks_url=healthchecks_url,
     )

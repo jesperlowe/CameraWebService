@@ -38,12 +38,13 @@ class AuthConfig:
 
 
 @dataclass
-class SFTPConfig:
+class ConnectionConfig:
+    """Server connection credentials — shared by the ftp, ftps, and sftp upload methods."""
     host: str = ""
-    port: int = 21
+    port: int = 21  # FTP/FTPS default; SFTP typically uses 22
     username: str = ""
     password: str = ""
-    private_key_path: str = ""
+    private_key_path: str = ""  # SFTP only
     remote_dir: str = "/public_html/camera"
 
 
@@ -57,7 +58,8 @@ class WordpressConfig:
 class UploadConfig:
     method: str = "ftp"
     public_base_url: str = ""
-    sftp: SFTPConfig = field(default_factory=SFTPConfig)
+    # "sftp" key kept for JSON compatibility; holds credentials for ftp / ftps / sftp
+    sftp: ConnectionConfig = field(default_factory=ConnectionConfig)
     wordpress: WordpressConfig = field(default_factory=WordpressConfig)
 
 
@@ -161,7 +163,7 @@ def load_config() -> AppConfig:
         upload=UploadConfig(
             method=data.get("upload", {}).get("method", "ftp"),
             public_base_url=data.get("upload", {}).get("public_base_url", ""),
-            sftp=SFTPConfig(**sftp_data),
+            sftp=ConnectionConfig(**sftp_data),
             wordpress=WordpressConfig(**data.get("upload", {}).get("wordpress", {})),
         ),
         ntp=NtpConfig(**ntp_data),
