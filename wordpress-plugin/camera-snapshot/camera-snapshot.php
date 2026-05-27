@@ -1,6 +1,7 @@
 <?php
 /**
  * Plugin Name: Camera Snapshot
+ * Description: Modtager kamerabilledfiler fra CameraWebService og eksponerer dem via shortcode.
  */
 if (!defined('ABSPATH')) exit;
 
@@ -36,16 +37,40 @@ function cs_upload_cb($request) {
   if (!$hdr || !hash_equals($expected, $hdr)) return new WP_REST_Response(['error'=>'unauthorized'], 401);
   $body = $request->get_body();
   if (!$body) return new WP_REST_Response(['error'=>'empty body'], 400);
+
+  // Extract filename from Content-Disposition header (sent by CameraWebService).
+  // Falls back to latest.jpg so single-camera setups keep working unchanged.
+  $disposition = $request->get_header('content-disposition');
+  $filename = 'latest.jpg';
+  if ($disposition && preg_match('/filename="([^"]+)"/', $disposition, $m)) {
+    $candidate = sanitize_file_name($m[1]);
+    // Only allow safe JPEG filenames: word chars, hyphens, digits + .jpg/.jpeg
+    if (preg_match('/^[\w\-]+\.jpe?g$/i', $candidate)) {
+      $filename = $candidate;
+    }
+  }
+
   $upload = wp_upload_dir();
   $dir = trailingslashit($upload['basedir']).'camera-snapshot';
   if (!file_exists($dir)) wp_mkdir_p($dir);
-  $file = trailingslashit($dir).'latest.jpg';
-  file_put_contents($file, $body);
-  return ['ok'=>true, 'url'=>trailingslashit($upload['baseurl']).'camera-snapshot/latest.jpg'];
+  file_put_contents(trailingslashit($dir).$filename, $body);
+  return ['ok'=>true, 'url'=>trailingslashit($upload['baseurl']).'camera-snapshot/'.$filename];
 }
 
-add_shortcode('camera_snapshot', function() {
+/**
+ * Shortcode: [camera_snapshot] or [camera_snapshot file="camera2.jpg"]
+ *
+ * The optional "file" attribute lets you display a specific camera's image
+ * when using the multi-camera setup in CameraWebService. Defaults to latest.jpg.
+ */
+add_shortcode('camera_snapshot', function($atts) {
+  $atts = shortcode_atts(['file' => 'latest.jpg'], $atts, 'camera_snapshot');
+  $filename = sanitize_file_name($atts['file']);
+  // Reject filenames that don't look like safe JPEG names
+  if (!preg_match('/^[\w\-]+\.jpe?g$/i', $filename)) {
+    $filename = 'latest.jpg';
+  }
   $upload = wp_upload_dir();
-  $url = trailingslashit($upload['baseurl']).'camera-snapshot/latest.jpg?t='.time();
-  return '<img src="'.esc_url($url).'" alt="Camera Snapshot" />';
+  $url = trailingslashit($upload['baseurl']).'camera-snapshot/'.esc_attr($filename).'?t='.time();
+  return '<img src="'.esc_url($url).'" alt="Camera Snapshot" style="max-width:100%;height:auto;" />';
 });

@@ -6,11 +6,19 @@ from pathlib import Path
 
 import bcrypt
 
-CONFIG_PATH = Path(os.environ.get("CAMERA_UPLOADER_CONFIG", "/opt/camera-uploader/config.json"))
+APP_VERSION = "3.1.0"
+
+CONFIG_PATH = Path(
+    os.environ.get("CAMERAWEBSERVICE_CONFIG")
+    or os.environ.get("CAMERA_UPLOADER_CONFIG")  # backward compat
+    or "/opt/CameraWebService/config.json"
+)
 
 MAX_CAMERAS = 5
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+DEFAULT_INTERVAL = 15
 
 
 def hash_password(password: str) -> str:
@@ -30,12 +38,13 @@ class AuthConfig:
 
 
 @dataclass
-class SFTPConfig:
+class ConnectionConfig:
+    """Server connection credentials — shared by the ftp, ftps, and sftp upload methods."""
     host: str = ""
-    port: int = 21
+    port: int = 21  # FTP/FTPS default; SFTP typically uses 22
     username: str = ""
     password: str = ""
-    private_key_path: str = ""
+    private_key_path: str = ""  # SFTP only
     remote_dir: str = "/public_html/camera"
 
 
@@ -48,7 +57,9 @@ class WordpressConfig:
 @dataclass
 class UploadConfig:
     method: str = "ftp"
-    sftp: SFTPConfig = field(default_factory=SFTPConfig)
+    public_base_url: str = ""
+    # "sftp" key kept for JSON compatibility; holds credentials for ftp / ftps / sftp
+    sftp: ConnectionConfig = field(default_factory=ConnectionConfig)
     wordpress: WordpressConfig = field(default_factory=WordpressConfig)
 
 
@@ -62,20 +73,42 @@ class NtpConfig:
 class AppConfig:
     auth: AuthConfig = field(default_factory=AuthConfig)
     cameras: list = field(default_factory=lambda: [
-        {"id": 1, "name": "Kamera 1", "rtsp_url": "", "enabled": True, "filename": "camera1.jpg"}
+        {
+            "id": 1,
+            "name": "Kamera 1",
+            "rtsp_url": "",
+            "enabled": True,
+            "filename": "camera1.jpg",
+            "capture_interval_minutes": DEFAULT_INTERVAL,
+            "pause_schedule": [],
+        }
     ])
-    capture_interval_minutes: int = 15
+    capture_interval_minutes: int = DEFAULT_INTERVAL  # global fallback
     upload: UploadConfig = field(default_factory=UploadConfig)
     ntp: NtpConfig = field(default_factory=NtpConfig)
-    dark_periods: list = field(default_factory=list)
+    dark_periods: list = field(default_factory=list)  # global fallback
+    timezone: str = "Europe/Copenhagen"
+    allowed_hosts: list = field(default_factory=lambda: ["*"])
+    language: str = "da"
+    healthchecks_url: str = ""  # optional healthchecks.io ping URL
 
 
 def _chmod_600(path: Path) -> None:
     path.chmod(0o600)
 
 
+def _migrate_camera(cam: dict, global_interval: int) -> dict:
+    """Ensure every camera dict has per-camera interval and pause_schedule."""
+    if "capture_interval_minutes" not in cam:
+        cam["capture_interval_minutes"] = global_interval
+    if "pause_schedule" not in cam:
+        cam["pause_schedule"] = []
+    return cam
+
+
 def _migrate_legacy(data: dict) -> dict:
-    """Migrate v1 config (single camera) to v2 (cameras list)."""
+    """Migrate v1/v2 config to v3 (per-camera interval + pause_schedule, timezone, allowed_hosts)."""
+    # v1 → v2: single camera → cameras list
     if "camera" in data and "cameras" not in data:
         old = data.pop("camera")
         data["cameras"] = [{
@@ -85,17 +118,32 @@ def _migrate_legacy(data: dict) -> dict:
             "enabled": True,
             "filename": "camera1.jpg",
         }]
-        data["capture_interval_minutes"] = old.get("capture_interval_minutes", 15)
+        data["capture_interval_minutes"] = old.get("capture_interval_minutes", DEFAULT_INTERVAL)
+
     if "ntp" not in data:
         data["ntp"] = {"enabled": True, "server": "pool.ntp.org"}
     if "dark_periods" not in data:
         data["dark_periods"] = []
+    if "timezone" not in data:
+        data["timezone"] = "Europe/Copenhagen"
+    if "allowed_hosts" not in data:
+        data["allowed_hosts"] = ["*"]
+    if "language" not in data:
+        data["language"] = "da"
+    if "healthchecks_url" not in data:
+        data["healthchecks_url"] = ""
+
     # Migrate remote_path → remote_dir
     sftp = data.get("upload", {}).get("sftp", {})
     if "remote_path" in sftp and "remote_dir" not in sftp:
         import posixpath
         old_path = sftp.pop("remote_path")
         sftp["remote_dir"] = posixpath.dirname(old_path) or old_path
+
+    # v2 → v3: add per-camera fields
+    global_interval = data.get("capture_interval_minutes", DEFAULT_INTERVAL)
+    data["cameras"] = [_migrate_camera(cam, global_interval) for cam in data.get("cameras", [])]
+
     return data
 
 
@@ -111,14 +159,19 @@ def load_config() -> AppConfig:
     return AppConfig(
         auth=AuthConfig(**data.get("auth", {})),
         cameras=data.get("cameras", []),
-        capture_interval_minutes=data.get("capture_interval_minutes", 15),
+        capture_interval_minutes=data.get("capture_interval_minutes", DEFAULT_INTERVAL),
         upload=UploadConfig(
             method=data.get("upload", {}).get("method", "ftp"),
-            sftp=SFTPConfig(**sftp_data),
+            public_base_url=data.get("upload", {}).get("public_base_url", ""),
+            sftp=ConnectionConfig(**sftp_data),
             wordpress=WordpressConfig(**data.get("upload", {}).get("wordpress", {})),
         ),
         ntp=NtpConfig(**ntp_data),
         dark_periods=data.get("dark_periods", []),
+        timezone=data.get("timezone", "Europe/Copenhagen"),
+        allowed_hosts=data.get("allowed_hosts", ["*"]),
+        language=data.get("language", "da"),
+        healthchecks_url=data.get("healthchecks_url", ""),
     )
 
 

@@ -1,29 +1,37 @@
+import io
+import json as _json
 import logging
+import re
 import threading
+import time
+import zipfile
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+import httpx
+from fastapi import FastAPI, Form, HTTPException, Query, Request, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from itsdangerous import URLSafeSerializer
+from itsdangerous import BadSignature, SignatureExpired, URLSafeSerializer
 
-from src.backup import config_to_xml, xml_to_config
+from src.backup import config_to_xml, config_to_xml_no_auth, xml_to_config
 from src.capture import capture_snapshot
-from src.config import MAX_CAMERAS, WEEKDAYS, hash_password, load_config, save_config, verify_password
+from src.config import APP_VERSION, DEFAULT_INTERVAL, MAX_CAMERAS, WEEKDAYS, hash_password, load_config, save_config, verify_password
+from src.i18n import available_languages, day_key, get_translator, invalidate_cache, LANG_DIR
 from src.ntp_sync import check_ntp
 from src.schedule_check import is_dark_time
 from src.uploader import upload_image
 
-app = FastAPI(title="Camera Uploader")
+app = FastAPI(title="CameraWebService")
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
-templates = Jinja2Templates(directory="src/templates")
 
-def _get_serializer() -> URLSafeSerializer:
-    """Load session secret from config so each installation has a unique key."""
-    return URLSafeSerializer(load_config().auth.session_secret)
+# WordPress plugin source directory (relative to this file → project root)
+_PLUGIN_DIR = Path(__file__).parent.parent / "wordpress-plugin" / "camera-snapshot"
+templates = Jinja2Templates(directory="src/templates")
+templates.env.globals["APP_VERSION"] = APP_VERSION
+templates.env.globals["day_key"] = day_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +40,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("camera_uploader")
 log_buffer = deque(maxlen=200)
+
+# ── Session serializer — cached so load_config() is not called on every request ──
+# Updated whenever the session secret is changed (password change or first save).
+_serializer: URLSafeSerializer | None = None
+
+
+def _get_serializer() -> URLSafeSerializer:
+    global _serializer
+    if _serializer is None:
+        _serializer = URLSafeSerializer(load_config().auth.session_secret)
+    return _serializer
+
+
+def _refresh_serializer() -> None:
+    """Call after any save_config() that may change auth.session_secret."""
+    global _serializer
+    _serializer = URLSafeSerializer(load_config().auth.session_secret)
+
+
+def _ping_healthchecks(url: str, fail: bool = False) -> None:
+    """Fire-and-forget GET to a healthchecks.io check URL. Silently ignored if url is empty."""
+    if not url:
+        return
+    target = f"{url.rstrip('/')}/fail" if fail else url
+    try:
+        httpx.get(target, timeout=5)
+    except Exception as exc:
+        logger.warning("Healthchecks ping fejlede (%s): %s", target, exc)
+
 
 # Per-camera state keyed by camera id
 state = {
@@ -42,6 +79,9 @@ state = {
     "last_error": "-",
 }
 
+# Per-camera next-fire time (monotonic seconds)
+_cam_next_fire: dict[int, float] = {}
+
 
 class BufferHandler(logging.Handler):
     def emit(self, record):
@@ -51,7 +91,29 @@ class BufferHandler(logging.Handler):
 logger.addHandler(BufferHandler())
 
 
-# ── Auth helpers ─────────────────────────────────────────────────────────────
+def _tpl(request: Request, extra: dict | None = None) -> dict:
+    """Build a base template context with translator and request."""
+    cfg = load_config()
+    t = get_translator(cfg.language)
+    ctx: dict = {"request": request, "_t": t}
+    if extra:
+        ctx.update(extra)
+    return ctx
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Persist any migrated fields (e.g. session_secret) so auth survives restarts
+    try:
+        cfg = load_config()
+        save_config(cfg)
+    except Exception as exc:
+        logger.error("Kunne ikke gemme konfiguration ved opstart: %s", exc)
+    _refresh_serializer()
+    threading.Thread(target=scheduler_loop, daemon=True).start()
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def _authed(request: Request) -> bool:
     token = request.cookies.get("session")
@@ -59,7 +121,10 @@ def _authed(request: Request) -> bool:
         return False
     try:
         return bool(_get_serializer().loads(token).get("u"))
-    except Exception:
+    except (BadSignature, SignatureExpired):
+        return False
+    except Exception as exc:
+        logger.warning("Auth-fejl (uventet): %s", exc)
         return False
 
 
@@ -72,14 +137,14 @@ def _require_auth(request: Request) -> None:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    return templates.TemplateResponse("login.html", _tpl(request, {"error": None}))
 
 
 @app.post("/login")
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
     cfg = load_config()
     if username != cfg.auth.username or not verify_password(password, cfg.auth.password_hash):
-        return templates.TemplateResponse("login.html", {"request": request, "error": "Forkert login"})
+        return templates.TemplateResponse("login.html", _tpl(request, {"error": "Forkert login"}))
     resp = RedirectResponse("/", status_code=302)
     resp.set_cookie(
         "session",
@@ -104,6 +169,7 @@ def change_password(request: Request, password: str = Form(...)):
     cfg.auth.password_hash = hash_password(password)
     cfg.auth.force_password_change = False
     save_config(cfg)
+    _refresh_serializer()
     return RedirectResponse("/", status_code=302)
 
 
@@ -113,12 +179,11 @@ def change_password(request: Request, password: str = Form(...)):
 def dashboard(request: Request):
     _require_auth(request)
     cfg = load_config()
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "state": state,
+    return templates.TemplateResponse("dashboard.html", _tpl(request, {
+        "state":   state,
         "cameras": cfg.cameras,
-        "force": cfg.auth.force_password_change,
-    })
+        "force":   cfg.auth.force_password_change,
+    }))
 
 
 # ── Camera management ─────────────────────────────────────────────────────────
@@ -127,21 +192,12 @@ def dashboard(request: Request):
 def cameras_page(request: Request):
     _require_auth(request)
     cfg = load_config()
-    return templates.TemplateResponse("cameras.html", {
-        "request": request,
-        "cameras": cfg.cameras,
-        "interval": cfg.capture_interval_minutes,
+    return templates.TemplateResponse("cameras.html", _tpl(request, {
+        "cameras":     cfg.cameras,
+        "interval":    cfg.capture_interval_minutes,
         "max_cameras": MAX_CAMERAS,
-    })
-
-
-@app.post("/cameras/interval")
-def save_interval(request: Request, interval: int = Form(...)):
-    _require_auth(request)
-    cfg = load_config()
-    cfg.capture_interval_minutes = max(1, interval)
-    save_config(cfg)
-    return RedirectResponse("/cameras", status_code=302)
+        "weekdays":    WEEKDAYS,
+    }))
 
 
 @app.post("/cameras/add")
@@ -149,7 +205,8 @@ def add_camera(request: Request,
                name: str = Form(...),
                rtsp_url: str = Form(""),
                filename: str = Form(...),
-               enabled: str = Form("off")):
+               enabled: str = Form("off"),
+               capture_interval_minutes: int = Form(DEFAULT_INTERVAL)):
     _require_auth(request)
     cfg = load_config()
     if len(cfg.cameras) >= MAX_CAMERAS:
@@ -161,6 +218,8 @@ def add_camera(request: Request,
         "rtsp_url": rtsp_url,
         "enabled": enabled == "on",
         "filename": filename or f"camera{next_id}.jpg",
+        "capture_interval_minutes": max(1, capture_interval_minutes),
+        "pause_schedule": [],
     })
     save_config(cfg)
     return RedirectResponse("/cameras", status_code=302)
@@ -171,15 +230,17 @@ def save_camera(request: Request, cam_id: int,
                 name: str = Form(...),
                 rtsp_url: str = Form(""),
                 filename: str = Form(...),
-                enabled: str = Form("off")):
+                enabled: str = Form("off"),
+                capture_interval_minutes: int = Form(DEFAULT_INTERVAL)):
     _require_auth(request)
     cfg = load_config()
     for cam in cfg.cameras:
         if cam.get("id") == cam_id:
-            cam["name"]     = name
-            cam["rtsp_url"] = rtsp_url
-            cam["filename"] = filename or cam["filename"]
-            cam["enabled"]  = enabled == "on"
+            cam["name"]                    = name
+            cam["rtsp_url"]               = rtsp_url
+            cam["filename"]               = filename or cam["filename"]
+            cam["enabled"]                = enabled == "on"
+            cam["capture_interval_minutes"] = max(1, capture_interval_minutes)
             break
     save_config(cfg)
     return RedirectResponse("/cameras", status_code=302)
@@ -194,6 +255,57 @@ def delete_camera(request: Request, cam_id: int):
     return RedirectResponse("/cameras", status_code=302)
 
 
+# ── Per-camera pause schedule ─────────────────────────────────────────────────
+
+@app.post("/cameras/{cam_id}/pause/add")
+def add_cam_pause(request: Request, cam_id: int,
+                  label: str = Form(""),
+                  day: str = Form("all"),
+                  start: str = Form("22:00"),
+                  end: str = Form("06:00"),
+                  enabled: str = Form("off")):
+    _require_auth(request)
+    cfg = load_config()
+    for cam in cfg.cameras:
+        if cam.get("id") == cam_id:
+            schedule = cam.setdefault("pause_schedule", [])
+            next_id = max((p.get("id", 0) for p in schedule), default=0) + 1
+            schedule.append({
+                "id": next_id, "label": label, "day": day,
+                "start": start, "end": end, "enabled": enabled == "on",
+            })
+            break
+    save_config(cfg)
+    return RedirectResponse("/cameras", status_code=302)
+
+
+@app.post("/cameras/{cam_id}/pause/{period_id}/toggle")
+def toggle_cam_pause(request: Request, cam_id: int, period_id: int):
+    _require_auth(request)
+    cfg = load_config()
+    for cam in cfg.cameras:
+        if cam.get("id") == cam_id:
+            for p in cam.get("pause_schedule", []):
+                if p.get("id") == period_id:
+                    p["enabled"] = not p.get("enabled", True)
+                    break
+            break
+    save_config(cfg)
+    return RedirectResponse("/cameras", status_code=302)
+
+
+@app.post("/cameras/{cam_id}/pause/{period_id}/delete")
+def delete_cam_pause(request: Request, cam_id: int, period_id: int):
+    _require_auth(request)
+    cfg = load_config()
+    for cam in cfg.cameras:
+        if cam.get("id") == cam_id:
+            cam["pause_schedule"] = [p for p in cam.get("pause_schedule", []) if p.get("id") != period_id]
+            break
+    save_config(cfg)
+    return RedirectResponse("/cameras", status_code=302)
+
+
 @app.post("/cameras/{cam_id}/test")
 def test_camera(request: Request, cam_id: int):
     _require_auth(request)
@@ -201,9 +313,19 @@ def test_camera(request: Request, cam_id: int):
     cam = next((c for c in cfg.cameras if c.get("id") == cam_id), None)
     if not cam:
         return RedirectResponse("/cameras", status_code=302)
-    img = capture_snapshot(cam["rtsp_url"])
-    state["cameras"].setdefault(cam_id, {})["last_image"] = img
-    state["cameras"][cam_id]["name"] = cam.get("name", "")
+    try:
+        img = capture_snapshot(cam["rtsp_url"])
+        state["cameras"].setdefault(cam_id, {}).update({
+            "last_image": img,
+            "name":       cam.get("name", ""),
+            "last_error": "-",
+        })
+    except Exception as exc:
+        logger.error("Snapshot fejlede for kamera '%s': %s", cam.get("name"), exc)
+        state["cameras"].setdefault(cam_id, {}).update({
+            "name":       cam.get("name", ""),
+            "last_error": str(exc),
+        })
     return RedirectResponse("/", status_code=302)
 
 
@@ -215,12 +337,19 @@ def upload_test_camera(request: Request, cam_id: int):
     if not cam:
         return RedirectResponse("/", status_code=302)
     cam_state = state["cameras"].get(cam_id, {})
-    img = cam_state.get("last_image") or capture_snapshot(cam["rtsp_url"])
-    upload_image(img, cfg, cam.get("filename", f"camera{cam_id}.jpg"))
-    state["cameras"].setdefault(cam_id, {}).update({
-        "last_upload": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "last_error": "-",
-    })
+    try:
+        img = cam_state.get("last_image") or capture_snapshot(cam["rtsp_url"])
+        upload_image(img, cfg, cam.get("filename", f"camera{cam_id}.jpg"))
+        state["cameras"].setdefault(cam_id, {}).update({
+            "last_upload": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "last_error": "-",
+        })
+    except Exception as exc:
+        logger.error("Upload-test fejlede for kamera '%s': %s", cam.get("name"), exc)
+        state["cameras"].setdefault(cam_id, {}).update({
+            "name":       cam.get("name", ""),
+            "last_error": str(exc),
+        })
     return RedirectResponse("/", status_code=302)
 
 
@@ -231,17 +360,38 @@ def test_image(request: Request, cam_id: int):
     return Response(content=img, media_type="image/jpeg")
 
 
+# ── Public API (no auth) ──────────────────────────────────────────────────────
+
+@app.get("/api/cameras")
+def api_cameras():
+    """Public endpoint — returns camera list with computed public image URLs."""
+    cfg = load_config()
+    base = cfg.upload.public_base_url.rstrip("/")
+    result = []
+    for cam in cfg.cameras:
+        filename = cam.get("filename", "")
+        result.append({
+            "id":         cam.get("id"),
+            "name":       cam.get("name", ""),
+            "filename":   filename,
+            "public_url": f"{base}/{filename}" if base and filename else "",
+        })
+    return JSONResponse(result)
+
+
 # ── Upload settings ───────────────────────────────────────────────────────────
 
 @app.get("/upload")
 def upload_page(request: Request):
     _require_auth(request)
-    return templates.TemplateResponse("upload.html", {"request": request, "cfg": load_config()})
+    cfg = load_config()
+    return templates.TemplateResponse("upload.html", _tpl(request, {"cfg": cfg, "cameras": cfg.cameras}))
 
 
 @app.post("/upload")
 def save_upload(request: Request,
                 method: str = Form(...),
+                public_base_url: str = Form(""),
                 sftp_host: str = Form(""),
                 sftp_port: int = Form(21),
                 sftp_username: str = Form(""),
@@ -253,6 +403,7 @@ def save_upload(request: Request,
     _require_auth(request)
     cfg = load_config()
     cfg.upload.method             = method
+    cfg.upload.public_base_url    = public_base_url.strip()
     cfg.upload.sftp.host          = sftp_host
     cfg.upload.sftp.port          = sftp_port
     cfg.upload.sftp.username      = sftp_username
@@ -273,12 +424,11 @@ def save_upload(request: Request,
 def schedule_page(request: Request):
     _require_auth(request)
     cfg = load_config()
-    return templates.TemplateResponse("schedule.html", {
-        "request": request,
-        "cfg": cfg,
-        "weekdays": WEEKDAYS,
+    return templates.TemplateResponse("schedule.html", _tpl(request, {
+        "cfg":       cfg,
+        "weekdays":  WEEKDAYS,
         "ntp_state": state.get("ntp", {}),
-    })
+    }))
 
 
 @app.post("/schedule/ntp")
@@ -344,20 +494,111 @@ def delete_dark_period(request: Request, period_id: int):
     return RedirectResponse("/schedule", status_code=302)
 
 
+# ── System settings (timezone + allowed hosts) ────────────────────────────────
+
+@app.get("/settings")
+def settings_page(request: Request):
+    _require_auth(request)
+    cfg = load_config()
+    return templates.TemplateResponse("settings.html", _tpl(request, {"cfg": cfg}))
+
+
+@app.post("/settings")
+def save_settings(request: Request,
+                  timezone: str = Form("Europe/Copenhagen"),
+                  allowed_hosts: str = Form("*"),
+                  healthchecks_url: str = Form("")):
+    _require_auth(request)
+    cfg = load_config()
+    cfg.timezone = timezone.strip() or "Europe/Copenhagen"
+    hosts = [h.strip() for h in allowed_hosts.splitlines() if h.strip()]
+    cfg.allowed_hosts = hosts if hosts else ["*"]
+    cfg.healthchecks_url = healthchecks_url.strip()
+    save_config(cfg)
+    logger.info("Systemindstillinger gemt. Genstart tjenesten for at anvende ændrede tilladte hosts.")
+    return RedirectResponse("/settings", status_code=302)
+
+
+# ── Language ──────────────────────────────────────────────────────────────────
+
+@app.get("/language")
+def language_page(request: Request):
+    _require_auth(request)
+    cfg = load_config()
+    return templates.TemplateResponse("language.html", _tpl(request, {
+        "current_language": cfg.language,
+        "languages":        available_languages(),
+    }))
+
+
+@app.post("/language")
+def save_language(request: Request, language: str = Form("da")):
+    _require_auth(request)
+    cfg = load_config()
+    cfg.language = language.strip() or "da"
+    save_config(cfg)
+    return RedirectResponse("/language", status_code=302)
+
+
+@app.get("/language/download/{locale}")
+def download_language_file(request: Request, locale: str):
+    _require_auth(request)
+    if not re.match(r'^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8})?$', locale):
+        raise HTTPException(status_code=400, detail="Ugyldigt locale")
+    path = LANG_DIR / f"{locale}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Sprogfil ikke fundet")
+    return Response(
+        content=path.read_bytes(),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{locale}.json"'},
+    )
+
+
+@app.post("/language/upload")
+async def upload_language_file(request: Request, file: UploadFile = File(...)):
+    _require_auth(request)
+    content = await file.read()
+    try:
+        data = _json.loads(content)
+        if not isinstance(data.get("translations"), dict):
+            raise ValueError("Mangler 'translations' felt")
+        locale = str(data.get("locale", "")).strip()
+        if not re.match(r'^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8})?$', locale):
+            raise ValueError(f"Ugyldigt locale: {locale!r}")
+        LANG_DIR.mkdir(parents=True, exist_ok=True)
+        (LANG_DIR / f"{locale}.json").write_text(content.decode("utf-8"), encoding="utf-8")
+        invalidate_cache(locale)
+        logger.info("Sprogfil '%s' uploaded og cachen nulstillet.", locale)
+    except Exception as exc:
+        logger.error("Sprogfil upload fejlede: %s", exc)
+        cfg = load_config()
+        return templates.TemplateResponse("language.html", _tpl(request, {
+            "current_language": cfg.language,
+            "languages":        available_languages(),
+            "upload_error":     str(exc),
+        }))
+    return RedirectResponse("/language", status_code=302)
+
+
 # ── Backup / Restore ──────────────────────────────────────────────────────────
 
 @app.get("/backup")
 def backup_page(request: Request):
     _require_auth(request)
-    return templates.TemplateResponse("backup.html", {"request": request})
+    return templates.TemplateResponse("backup.html", _tpl(request))
 
 
 @app.get("/backup/download")
-def backup_download(request: Request):
+def backup_download(request: Request, strip_auth: int = Query(0)):
     _require_auth(request)
     cfg = load_config()
-    xml_bytes = config_to_xml(cfg)
-    filename = datetime.now().strftime("backup_%Y%m%d_%H%M%S.xml")
+    if strip_auth:
+        xml_bytes = config_to_xml_no_auth(cfg)
+        filename = datetime.now().strftime("backup_no_auth_%Y%m%d_%H%M%S.xml")
+    else:
+        xml_bytes = config_to_xml(cfg)
+        filename = datetime.now().strftime("backup_%Y%m%d_%H%M%S.xml")
     return Response(
         content=xml_bytes,
         media_type="application/xml",
@@ -373,16 +614,38 @@ async def backup_restore(request: Request, file: UploadFile = File(...)):
         cfg = xml_to_config(content)
         save_config(cfg)
         logger.info("Konfiguration genoprettet fra XML-backup.")
-        return templates.TemplateResponse("backup.html", {
-            "request": request,
+        return templates.TemplateResponse("backup.html", _tpl(request, {
             "success": "Konfigurationen er genoprettet. Genstart tjenesten hvis scheduleren ikke reagerer.",
-        })
+        }))
     except Exception as exc:
         logger.error("Backup-gendannelse fejlede: %s", exc)
-        return templates.TemplateResponse("backup.html", {
-            "request": request,
+        return templates.TemplateResponse("backup.html", _tpl(request, {
             "error": f"Kunne ikke læse backup-filen: {exc}",
-        })
+        }))
+
+
+# ── WordPress plugin download ─────────────────────────────────────────────────
+
+@app.get("/plugin/download")
+def plugin_download(request: Request):
+    """Stream the WordPress plugin as a ready-to-install .zip file."""
+    _require_auth(request)
+    if not _PLUGIN_DIR.exists():
+        raise HTTPException(status_code=404, detail="Plugin-mappe ikke fundet på serveren.")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fpath in sorted(_PLUGIN_DIR.rglob("*")):
+            if fpath.is_file():
+                # Archive path: camera-snapshot/<relative-path-inside-plugin-dir>
+                arcname = "camera-snapshot/" + fpath.relative_to(_PLUGIN_DIR).as_posix()
+                zf.write(fpath, arcname)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="camera-snapshot.zip"'},
+    )
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
@@ -390,10 +653,20 @@ async def backup_restore(request: Request, file: UploadFile = File(...)):
 @app.get("/logs")
 def logs_page(request: Request):
     _require_auth(request)
-    return templates.TemplateResponse("logs.html", {"request": request, "logs": list(log_buffer)})
+    return templates.TemplateResponse("logs.html", _tpl(request, {"logs": list(log_buffer)}))
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
+
+def _should_fire(cam_id: int, interval_minutes: int) -> bool:
+    """True if enough time has elapsed for this camera to take a new snapshot."""
+    now = time.monotonic()
+    next_fire = _cam_next_fire.get(cam_id, 0)
+    if now >= next_fire:
+        _cam_next_fire[cam_id] = now + interval_minutes * 60
+        return True
+    return False
+
 
 def scheduler_loop():
     while True:
@@ -407,44 +680,64 @@ def scheduler_loop():
                 if not ntp_result["ok"]:
                     logger.warning("NTP-tjek fejlede: %s", ntp_result.get("error"))
 
-            # Dark period check
-            dark, reason = is_dark_time(cfg.dark_periods)
-            state["dark"] = dark
-            state["dark_reason"] = reason
-            if dark:
-                logger.info("Mørketid aktiv (%s) — springer over optagelse.", reason)
-            else:
-                for cam in cfg.cameras:
-                    if not cam.get("enabled"):
-                        continue
-                    rtsp = cam.get("rtsp_url", "")
-                    if not rtsp:
-                        continue
-                    cam_id = cam.get("id", 0)
-                    filename = cam.get("filename") or f"camera{cam_id}.jpg"
-                    try:
-                        img = capture_snapshot(rtsp)
-                        upload_image(img, cfg, filename)
-                        state["cameras"].setdefault(cam_id, {}).update({
-                            "name": cam.get("name", ""),
-                            "last_upload": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                            "last_error": "-",
-                        })
-                    except Exception as exc:
-                        logger.error("Kamera '%s' fejl: %s", cam.get("name"), exc)
-                        state["cameras"].setdefault(cam_id, {}).update({
-                            "name": cam.get("name", ""),
-                            "last_error": str(exc),
-                        })
+            tz = cfg.timezone or "Europe/Copenhagen"
+
+            # Check dark/pause state for every enabled camera (independent of fire timer)
+            # so the dashboard always reflects current pause status.
+            any_dark = False
+            dark_reason_first = ""
+            for cam in cfg.cameras:
+                if not cam.get("enabled") or not cam.get("rtsp_url"):
+                    continue
+                cam_schedule = cam.get("pause_schedule") or cfg.dark_periods
+                dark, reason = is_dark_time(cam_schedule, tz)
+                if dark:
+                    any_dark = True
+                    if not dark_reason_first:
+                        dark_reason_first = reason
+            state["dark"]        = any_dark
+            state["dark_reason"] = dark_reason_first
+
+            for cam in cfg.cameras:
+                if not cam.get("enabled"):
+                    continue
+                rtsp = cam.get("rtsp_url", "")
+                if not rtsp:
+                    continue
+                cam_id = cam.get("id", 0)
+                interval = max(1, cam.get("capture_interval_minutes", cfg.capture_interval_minutes))
+
+                if not _should_fire(cam_id, interval):
+                    continue
+
+                # Per-camera pause schedule (falls back to global dark_periods)
+                cam_schedule = cam.get("pause_schedule") or cfg.dark_periods
+                dark, reason = is_dark_time(cam_schedule, tz)
+                if dark:
+                    logger.info("Kamera '%s' pauseret (%s).", cam.get("name"), reason)
+                    continue
+
+                filename = cam.get("filename") or f"camera{cam_id}.jpg"
+                try:
+                    img = capture_snapshot(rtsp)
+                    upload_image(img, cfg, filename)
+                    state["cameras"].setdefault(cam_id, {}).update({
+                        "name": cam.get("name", ""),
+                        "last_upload": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                        "last_error": "-",
+                    })
+                    _ping_healthchecks(cfg.healthchecks_url)
+                except Exception as exc:
+                    logger.error("Kamera '%s' fejl: %s", cam.get("name"), exc)
+                    state["cameras"].setdefault(cam_id, {}).update({
+                        "name": cam.get("name", ""),
+                        "last_error": str(exc),
+                    })
+                    _ping_healthchecks(cfg.healthchecks_url, fail=True)
 
         except Exception as exc:
             logger.error("Scheduler fejl: %s", exc)
             state["last_error"] = str(exc)
         finally:
-            interval = max(load_config().capture_interval_minutes, 1)
-            threading.Event().wait(interval * 60)
-
-
-@app.on_event("startup")
-async def startup_event():
-    threading.Thread(target=scheduler_loop, daemon=True).start()
+            # Poll every 30 seconds; individual camera timers control actual fire rate
+            threading.Event().wait(30)
