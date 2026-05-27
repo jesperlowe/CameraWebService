@@ -2,7 +2,9 @@
 
 **Version 3.1.0** — Webbaseret kameraservice til Raspberry Pi.
 
-Henter snapshots fra RTSP/RTSPS-streams med `ffmpeg` og uploader direkte fra RAM (ingen permanent lokal JPG-fil). Integrerer med Track Status Light Server via en offentlig kamera-URL.
+Henter snapshots fra RTSP/RTSPS-streams med `ffmpeg` og uploader direkte fra RAM — ingen permanent lokal billedfil. Understøtter op til 5 kameraer med individuelle optagelsesintervaller og pauseskemaer. Integrerer med Track Status Light Server via en offentlig kamera-URL.
+
+---
 
 ## Hardwarekrav
 
@@ -10,7 +12,9 @@ Henter snapshots fra RTSP/RTSPS-streams med `ffmpeg` og uploader direkte fra RAM
 - SD-kort 16 GB+
 - Netværk (Ethernet anbefales)
 
-## Samlet installationsvejledning
+---
+
+## Installation
 
 ### Trin 1 — Klargør SD-kort
 
@@ -19,19 +23,17 @@ Henter snapshots fra RTSP/RTSPS-streams med `ffmpeg` og uploader direkte fra RAM
 3. Klik på tandhjulet (⚙) eller tryk **Ctrl+Shift+X** for at åbne *Advanced options*:
    - Sæt hostname, fx `rpicam01`
    - Aktivér SSH
-   - Angiv brugernavn og adgangskode, fx `admin` / dit-password
+   - Angiv brugernavn og adgangskode
    - Konfigurér WiFi hvis du ikke bruger Ethernet
 4. Skriv image til SD-kortet og sæt det i Pi'en.
 
 ### Trin 2 — Find Pi'ens IP-adresse
 
-Boot Pi'en og find dens IP-adresse — enten fra din router eller via SSH-scan:
-
 ```bash
 # Fra en anden maskine på samme netværk:
 ping rpicam01.local
 
-# Eller find IP direkte på Pi'en (kræver skærm/tastatur):
+# Eller find IP direkte på Pi'en:
 hostname -I
 ```
 
@@ -39,8 +41,6 @@ Opret SSH-forbindelse:
 
 ```bash
 ssh admin@rpicam01.local
-# eller
-ssh admin@<ip-adresse>
 ```
 
 ### Trin 3 — Opdatér systemet og installér Git
@@ -65,10 +65,10 @@ sudo bash install.sh
 ```
 
 Scriptet installerer automatisk:
-- Python 3, python3-venv og ffmpeg
+- Python 3, `python3-venv` og `ffmpeg`
 - Systembrugeren `camerawebservice`
 - Koden i `/opt/CameraWebService`
-- Et Python virtual environment med alle pakker
+- Et Python virtual environment med alle afhængigheder
 - Systemd-servicen `CameraWebService` (starter ved boot)
 
 Når installationen er færdig vises adressen til webinterfacet:
@@ -96,80 +96,153 @@ git pull
 sudo bash install.sh
 ```
 
-## Første login
+---
 
-- Brugernavn: `admin`
-- Adgangskode: `admin`
-
-Du tvinges til at vælge en ny adgangskode ved første login.
-
-## Brug
+## Webinterface — oversigt
 
 | Fane | Formål |
 |------|--------|
-| **Dashboard** | Kamerastatus, seneste upload og fejl |
-| **Kameraer** | Tilføj/ret kameraer — RTSP-URL, filnavn, optagelsesinterval |
-| **Upload** | FTP/SFTP/WordPress upload-konfiguration og offentlig URL |
-| **Tidsplan** | NTP-opsætning, globale pausetider og per-kamera pauseskemaer |
-| **Indstillinger** | Tidszone, kendte hostnavne og Healthchecks.io |
+| **Dashboard** | Status for alle kameraer — seneste upload, eventuelle fejl og mørketidsstatus |
+| **Kameraer** | Tilføj/ret kameraer — RTSP-URL, filnavn, optagelsesinterval, per-kamera pauseskema |
+| **Upload** | Upload-metode (FTP/FTPS/SFTP/WordPress), offentlig basis-URL |
+| **Tidsplan** | NTP-opsætning og globale mørkeperioder (fælles fallback for alle kameraer) |
+| **Indstillinger** | Tidszone, tilladte hostnavne og Healthchecks.io ping-URL |
 | **Sprog** | Skift sprog, upload og download sprogfiler |
 | **Logs** | Applikationslog direkte i browseren |
-| **Backup** | Download/genopret konfiguration som XML |
+| **Backup** | Download/genopret konfiguration som XML; download WordPress-plugin som zip |
 
-## Netværksstyring
+---
 
-Hostname, IP-adresser og netværksindstillinger styres **ikke** fra CameraWebService.
-Vi anbefaler [**Cockpit**](https://cockpit-project.org/) til dette formål — et professionelt webbaseret administrationspanel til Linux der kører direkte på Pi'en.
+## Kameraer
 
-**Installation af Cockpit:**
-```bash
-sudo apt install -y cockpit
-sudo systemctl enable --now cockpit.socket
+Tjenesten understøtter op til **5 kameraer** med individuelle indstillinger:
+
+| Indstilling | Beskrivelse |
+|-------------|-------------|
+| **RTSP-URL** | Stream-adresse, fx `rtsp://bruger:kode@192.168.1.100:554/stream` |
+| **Filnavn** | Navn på den uploadede fil, fx `camera1.jpg` |
+| **Interval** | Antal minutter mellem snapshots (minimum 1) |
+| **Pauseskema** | Tidsintervaller hvor kameraet ikke optager (per kamera, se nedenfor) |
+
+### Pauseskema (per kamera og globalt)
+
+Hvert kamera har sit eget pauseskema. Hvis et kamera ikke har et skema, bruges de **globale mørkeperioder** fra **Tidsplan** som fallback.
+
+Pauseskemaer understøtter natten-over-perioder (fx 22:00–06:00) og kan begrænses til bestemte ugedage.
+
+---
+
+## Upload-metoder
+
+### FTP / FTPS
+
+Vælg `ftp` eller `ftps` og udfyld host, port (`21`), brugernavn, adgangskode og remote-mappe.
+
+### SFTP (SSH)
+
+Vælg `sftp`. Port er typisk `22`. Du kan bruge enten adgangskode eller en privat SSH-nøgle (angiv stien til nøglefilen på Pi'en).
+
+### WordPress REST API
+
+Vælg `wordpress` og angiv endpoint-URL og Bearer-token (genereres i WordPress-pluginet).
+
+### Offentlig basis-URL
+
+Uanset upload-metode kan du angive en **offentlig basis-URL** — den rod-URL hvor billederne er tilgængelige på nettet. CameraWebService bruger denne URL til at informere Track Status Light Server om kameraets aktuelle billede.
+
+---
+
+## WordPress-integration
+
+### Download plugin
+
+Download WordPress-pluginet direkte fra webinterfacet:
+
+**Backup → WordPress-plugin → Download camera-snapshot.zip**
+
+Installér zippet i WordPress via **Plugins → Tilføj ny → Upload plugin**.
+
+### Opsætning
+
+1. Gå til **Indstillinger → Camera Snapshot** i WordPress-admin.
+2. Klik **Generér token** og kopiér det genererede token.
+3. Indsæt token og endpoint-URL i CameraWebService under **Upload**.
+
+Endpoint: `https://dit-site.dk/wp-json/camera-snapshot/v1/upload`
+
+### Shortcodes
+
 ```
+[camera_snapshot]
+```
+Viser det seneste billede fra standardkameraet (`latest.jpg`).
 
-Cockpit åbnes på: `http://<pi-ip>:9090`
+```
+[camera_snapshot file="camera2.jpg"]
+```
+Viser billedet fra et specifikt kamera. Brug det filnavn du har konfigureret i CameraWebService.
 
-Her kan du ændre hostname, konfigurere statisk IP, overvåge CPU/RAM og styre services — alt fra browseren.
+---
 
-## Lyst og mørkt tema
+## Tema
 
-Klik på solen/måne-ikonet øverst i navigationen for at skifte mellem mørkt og lyst tema. Valget gemmes i browseren (localStorage) og huskes på tværs af sessioner.
+Klik på solen/måne-ikonet øverst i navigationen for at skifte mellem mørkt og lyst tema. Valget huskes i browseren på tværs af sessioner.
+
+---
 
 ## Healthchecks.io
 
-Under **Indstillinger** kan du angive en [healthchecks.io](https://healthchecks.io/) ping-URL. Tjenesten sender automatisk et ping efter hvert vellykket kamera-upload og pinger `/fail`-URL'en ved fejl. Dette giver overvågning og notifikationer hvis kameraet holder op med at uploade.
+Under **Indstillinger** kan du angive en [healthchecks.io](https://healthchecks.io/) ping-URL:
 
 ```
 https://hc-ping.com/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
+- Ping sendes automatisk efter hvert vellykket upload.
+- `/fail` pinges ved fejl.
+
+Giver overvågning med notifikationer hvis kameraet holder op med at uploade.
+
+---
+
 ## Sprogfiler
 
-Sprogfiler ligger i mappen `language/`. Du kan administrere dem direkte fra **Sprog**-fanen i web-UI'et:
+Sprogfiler ligger i `language/`. Administrér dem fra **Sprog**-fanen:
 
-- **Download** — Hent en eksisterende sprogfil som `.json` og brug den som skabelon.
-- **Upload** — Upload en ny eller redigeret `.json`-sprogfil direkte til serveren uden SSH.
+- **Download** — Hent en eksisterende sprogfil som `.json` til brug som skabelon.
+- **Upload** — Upload en ny eller redigeret `.json`-sprogfil direkte uden SSH.
 
-Manuelt: tilføj en ny fil `language/xx.json` (se `da.json` som skabelon). Filen skal indeholde felterne `version`, `locale`, `name`, `nativeName`, `fallback` og `translations`.
+Filen skal indeholde felterne `version`, `locale`, `name`, `nativeName`, `fallback` og `translations`.
 
-## FTP/SFTP upload
+---
 
-Udfyld host, port, brugernavn, adgangskode og remote-mappe under **Upload**. Brug "Test upload" på dashboard for at verificere forbindelsen.
+## Backup og gendannelse
 
-## FTPS
+Under **Backup** kan du:
 
-Vælg metoden `ftps` og angiv de samme felter som FTP.
+| Handling | Beskrivelse |
+|----------|-------------|
+| **Fuld backup** | XML med alle indstillinger inkl. adgangskoder og tokens |
+| **Backup uden adgangskoder** | XML til deling med support — kræver nyt password ved genoprettelse |
+| **Genopret** | Upload en XML-backup for at erstatte den nuværende konfiguration |
+| **Download plugin** | WordPress-plugin som installationsklar `.zip`-fil |
 
-## UniFi Protect RTSPS
+Backuppen inkluderer: kameraer, upload-konfiguration, pauseskemaer, NTP, mørkeperioder, tidszone, sprog og Healthchecks.io URL.
 
-Angiv Protect stream-URL i RTSP-URL-feltet: `rtsps://192.168.x.x/...`
+---
 
-## WordPress-integration
+## Netværksstyring
 
-Zip mappen `wordpress-plugin/camera-snapshot` og installér i WordPress.
+Hostname, IP-adresser og netværksindstillinger styres ikke fra CameraWebService. Vi anbefaler [**Cockpit**](https://cockpit-project.org/):
 
-- REST endpoint: `/wp-json/camera-snapshot/v1/upload`
-- Shortcode: `[camera_snapshot]`
+```bash
+sudo apt install -y cockpit
+sudo systemctl enable --now cockpit.socket
+```
+
+Cockpit åbnes på `http://<pi-ip>:9090`.
+
+---
 
 ## Fejlfinding
 
@@ -184,15 +257,17 @@ sudo systemctl status CameraWebService
 sudo systemctl restart CameraWebService
 ```
 
-Applikationsloggen er også tilgængelig i web-UI under **Logs**.
+Applikationsloggen er også tilgængelig direkte i web-UI under **Logs**.
 
-## Backup og gendannelse
+### Ældre Hikvision-kameraer
 
-Under **Backup** kan du downloade konfigurationen som XML — enten med eller uden adgangskoder. Brug den fulde backup til at flytte installationen til ny hardware.
+Nogle ældre Hikvision-kameraer (fx DS-2CD2532F-I) fejler ved RTSP-forhandling med exitkode 8. CameraWebService løser dette automatisk ved at begrænse ffmpeg til video-tracks og undgå SDP-options der afvises af disse kameraer.
+
+---
 
 ## Sikkerhed
 
 - Konfiguration gemmes i `/opt/CameraWebService/config.json` med `chmod 600`
-- Passwords og tokens vises ikke i UI efter de er gemt
-- Session-nøglen genereres tilfældigt ved første opstart og gemmes i config
+- Adgangskoder og tokens vises ikke i UI efter de er gemt
+- Session-nøglen genereres tilfældigt ved første opstart
 - Tjenesten kører som den uprivilegerede systembruger `camerawebservice`
