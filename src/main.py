@@ -1,10 +1,13 @@
+import io
 import json as _json
 import logging
 import re
 import threading
 import time
+import zipfile
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, Query, Request, UploadFile, File
@@ -23,6 +26,9 @@ from src.uploader import upload_image
 
 app = FastAPI(title="CameraWebService")
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
+
+# WordPress plugin source directory (relative to this file → project root)
+_PLUGIN_DIR = Path(__file__).parent.parent / "wordpress-plugin" / "camera-snapshot"
 templates = Jinja2Templates(directory="src/templates")
 templates.env.globals["APP_VERSION"] = APP_VERSION
 templates.env.globals["day_key"] = day_key
@@ -616,6 +622,30 @@ async def backup_restore(request: Request, file: UploadFile = File(...)):
         return templates.TemplateResponse("backup.html", _tpl(request, {
             "error": f"Kunne ikke læse backup-filen: {exc}",
         }))
+
+
+# ── WordPress plugin download ─────────────────────────────────────────────────
+
+@app.get("/plugin/download")
+def plugin_download(request: Request):
+    """Stream the WordPress plugin as a ready-to-install .zip file."""
+    _require_auth(request)
+    if not _PLUGIN_DIR.exists():
+        raise HTTPException(status_code=404, detail="Plugin-mappe ikke fundet på serveren.")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fpath in sorted(_PLUGIN_DIR.rglob("*")):
+            if fpath.is_file():
+                # Archive path: camera-snapshot/<relative-path-inside-plugin-dir>
+                arcname = "camera-snapshot/" + fpath.relative_to(_PLUGIN_DIR).as_posix()
+                zf.write(fpath, arcname)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="camera-snapshot.zip"'},
+    )
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
