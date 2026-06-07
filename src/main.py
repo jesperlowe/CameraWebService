@@ -18,10 +18,11 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeSerializer
 
 from src.backup import config_to_xml, config_to_xml_no_auth, xml_to_config
 from src.capture import capture_snapshot
-from src.config import APP_VERSION, DEFAULT_INTERVAL, MAX_CAMERAS, WEEKDAYS, hash_password, load_config, save_config, verify_password
+from src.config import APP_VERSION, DEFAULT_INTERVAL, GITHUB_REPO, MAX_CAMERAS, WEEKDAYS, hash_password, load_config, save_config, verify_password
 from src.i18n import available_languages, day_key, get_translator, invalidate_cache, LANG_DIR
 from src.ntp_sync import check_ntp
 from src.schedule_check import is_dark_time
+from src.update_check import check_for_update
 from src.uploader import upload_image
 
 app = FastAPI(title="CameraWebService")
@@ -77,10 +78,14 @@ state = {
     "dark_reason": "",
     "cameras": {},   # {cam_id: {last_upload, last_error, name, last_image}}
     "last_error": "-",
+    "update": {"available": False, "latest": None, "url": None, "checked_at": 0.0},
 }
 
 # Per-camera next-fire time (monotonic seconds)
 _cam_next_fire: dict[int, float] = {}
+
+# How often to ask GitHub for the latest release (seconds)
+_UPDATE_CHECK_INTERVAL = 24 * 60 * 60
 
 
 class BufferHandler(logging.Handler):
@@ -676,6 +681,14 @@ def scheduler_loop():
                 state["ntp"] = ntp_result
                 if not ntp_result["ok"]:
                     logger.warning("NTP-tjek fejlede: %s", ntp_result.get("error"))
+
+            # Update check — at most once every _UPDATE_CHECK_INTERVAL seconds
+            now_mono = time.monotonic()
+            if now_mono - state["update"].get("checked_at", 0.0) >= _UPDATE_CHECK_INTERVAL:
+                result = check_for_update(APP_VERSION, GITHUB_REPO)
+                state["update"] = {**result, "checked_at": now_mono}
+                if result["available"]:
+                    logger.info("Ny version tilgængelig: v%s (kører v%s)", result["latest"], APP_VERSION)
 
             tz = cfg.timezone or "Europe/Copenhagen"
 

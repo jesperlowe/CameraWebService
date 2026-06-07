@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "locale": "en",
   "name": "English",
   "nativeName": "English",
@@ -43,6 +43,9 @@
     "dashboard.dark.reason":   "Reason",
     "dashboard.test":          "Test snapshot",
     "dashboard.upload_test":   "Test upload",
+    "update.available":        "New version available:",
+    "update.current":          "running",
+    "update.changelog":        "See what's new →",
 
     "cameras.title":                   "Cameras",
     "cameras.name":                    "Name",

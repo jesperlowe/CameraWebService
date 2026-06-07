@@ -1,6 +1,6 @@
 # CameraWebService
 
-**Version 3.1.0** — Webbaseret kameraservice til Raspberry Pi.
+**Version 3.2.0** — Webbaseret kameraservice til Raspberry Pi.
 
 Henter snapshots fra RTSP/RTSPS-streams med `ffmpeg` og uploader direkte fra RAM — ingen permanent lokal billedfil. Understøtter op til 5 kameraer med individuelle optagelsesintervaller og pauseskemaer. Integrerer med Track Status Light Server via en offentlig kamera-URL.
 
