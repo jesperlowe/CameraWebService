@@ -23,15 +23,6 @@
     </div>
 
     <div class="field">
-      <label for="allowed_hosts">
-        {{ _t('settings.hosts') }}
-        <span class="hint">{{ _t('settings.hosts.hint') }}</span>
-      </label>
-      <textarea id="allowed_hosts" name="allowed_hosts"
-                rows="4" style="font-family:monospace;font-size:0.88rem;">{{ cfg.allowed_hosts | join('\n') }}</textarea>
-    </div>
-
-    <div class="field">
       <label for="healthchecks_url">
         {{ _t('settings.healthchecks.url') }}
         <span class="hint">{{ _t('settings.healthchecks.url.hint') }}</span>
@@ -63,10 +54,6 @@
   <div class="status-row">
     <span class="status-label">{{ _t('settings.timezone') }}</span>
     <span class="status-value">{{ cfg.timezone }}</span>
-  </div>
-  <div class="status-row">
-    <span class="status-label">{{ _t('settings.hosts') }}</span>
-    <span class="status-value" style="font-family:monospace;font-size:0.85rem;">{{ cfg.allowed_hosts | join(', ') }}</span>
   </div>
   <div class="status-row">
     <span class="status-label">{{ _t('nav.language') }}</span>

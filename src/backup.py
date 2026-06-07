@@ -47,9 +47,6 @@ def config_to_xml(cfg: AppConfig) -> bytes:
 
     # System
     _set(root, "timezone",      cfg.timezone)
-    hosts_el = ET.SubElement(root, "allowed_hosts")
-    for h in cfg.allowed_hosts:
-        _set(hosts_el, "host", h)
 
     # Cameras
     cameras_el = ET.SubElement(root, "cameras")
@@ -158,9 +155,6 @@ def xml_to_config(xml_bytes: bytes) -> AppConfig:
 
     # System
     timezone     = txt(root, "timezone", "Europe/Copenhagen")
-    allowed_hosts = [el.text.strip() for el in root.findall("allowed_hosts/host") if el.text]
-    if not allowed_hosts:
-        allowed_hosts = ["*"]
 
     # Cameras
     cameras = []
@@ -240,7 +234,6 @@ def xml_to_config(xml_bytes: bytes) -> AppConfig:
         ntp=ntp,
         dark_periods=dark_periods,
         timezone=timezone,
-        allowed_hosts=allowed_hosts,
         language=language,
         healthchecks_url=healthchecks_url,
     )

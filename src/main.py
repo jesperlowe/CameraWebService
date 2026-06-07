@@ -506,16 +506,13 @@ def settings_page(request: Request):
 @app.post("/settings")
 def save_settings(request: Request,
                   timezone: str = Form("Europe/Copenhagen"),
-                  allowed_hosts: str = Form("*"),
                   healthchecks_url: str = Form("")):
     _require_auth(request)
     cfg = load_config()
     cfg.timezone = timezone.strip() or "Europe/Copenhagen"
-    hosts = [h.strip() for h in allowed_hosts.splitlines() if h.strip()]
-    cfg.allowed_hosts = hosts if hosts else ["*"]
     cfg.healthchecks_url = healthchecks_url.strip()
     save_config(cfg)
-    logger.info("Systemindstillinger gemt. Genstart tjenesten for at anvende ændrede tilladte hosts.")
+    logger.info("Systemindstillinger gemt.")
     return RedirectResponse("/settings", status_code=302)
 
 

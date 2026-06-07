@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "locale": "da",
   "name": "Dansk",
   "nativeName": "Dansk",
@@ -107,8 +107,6 @@
     "settings.title":                  "Indstillinger",
     "settings.timezone":               "Tidszone",
     "settings.timezone.hint":          "IANA tidszone — fx Europe/Copenhagen, UTC, America/New_York",
-    "settings.hosts":                  "Kendte hostnavne",
-    "settings.hosts.hint":             "Ét hostname pr. linje. Kun til reference — tjenesten accepterer alle forbindelser.",
     "settings.healthchecks.url":       "Healthchecks.io ping URL",
     "settings.healthchecks.url.hint":  "Valgfri. Pinges efter hvert vellykket upload; /fail pinges ved fejl. Se healthchecks.io.",
     "settings.save":                   "Gem indstillinger",
