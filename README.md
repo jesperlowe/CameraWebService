@@ -102,11 +102,11 @@ sudo bash install.sh
 
 | Fane | Formål |
 |------|--------|
-| **Dashboard** | Status for alle kameraer — seneste upload, eventuelle fejl og mørketidsstatus |
+| **Dashboard** | Status for alle kameraer — seneste upload, eventuelle fejl, mørketidsstatus, og knapper til at tage og uploade et testsnapshot med live forhåndsvisning |
 | **Kameraer** | Tilføj/ret kameraer — RTSP-URL, filnavn, optagelsesinterval, per-kamera pauseskema |
 | **Upload** | Upload-metode (FTP/FTPS/SFTP/WordPress), offentlig basis-URL |
 | **Tidsplan** | NTP-opsætning og globale mørkeperioder (fælles fallback for alle kameraer) |
-| **Indstillinger** | Tidszone, tilladte hostnavne og Healthchecks.io ping-URL |
+| **Indstillinger** | Tidszone og Healthchecks.io ping-URL |
 | **Sprog** | Skift sprog, upload og download sprogfiler |
 | **Logs** | Applikationslog direkte i browseren |
 | **Backup** | Download/genopret konfiguration som XML; download WordPress-plugin som zip |
@@ -149,6 +149,22 @@ Vælg `wordpress` og angiv endpoint-URL og Bearer-token (genereres i WordPress-p
 ### Offentlig basis-URL
 
 Uanset upload-metode kan du angive en **offentlig basis-URL** — den rod-URL hvor billederne er tilgængelige på nettet. CameraWebService bruger denne URL til at informere Track Status Light Server om kameraets aktuelle billede.
+
+### Offentligt kamera-API
+
+```
+GET /api/cameras
+```
+
+Returnerer (uden login) en JSON-liste over alle konfigurerede kameraer med deres beregnede offentlige billed-URL — sammensat af den offentlige basis-URL og kameraets filnavn:
+
+```json
+[
+  { "id": 1, "name": "Kamera 1", "filename": "camera1.jpg", "public_url": "https://example.com/camera/camera1.jpg" }
+]
+```
+
+Praktisk for andre systemer (fx Track Status Light Server) der skal slå et kameras aktuelle billed-URL op uden at kende filnavnet på forhånd.
 
 ---
 
