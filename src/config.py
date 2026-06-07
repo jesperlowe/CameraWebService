@@ -88,7 +88,6 @@ class AppConfig:
     ntp: NtpConfig = field(default_factory=NtpConfig)
     dark_periods: list = field(default_factory=list)  # global fallback
     timezone: str = "Europe/Copenhagen"
-    allowed_hosts: list = field(default_factory=lambda: ["*"])
     language: str = "da"
     healthchecks_url: str = ""  # optional healthchecks.io ping URL
 
@@ -107,7 +106,7 @@ def _migrate_camera(cam: dict, global_interval: int) -> dict:
 
 
 def _migrate_legacy(data: dict) -> dict:
-    """Migrate v1/v2 config to v3 (per-camera interval + pause_schedule, timezone, allowed_hosts)."""
+    """Migrate v1/v2 config to v3 (per-camera interval + pause_schedule, timezone)."""
     # v1 → v2: single camera → cameras list
     if "camera" in data and "cameras" not in data:
         old = data.pop("camera")
@@ -126,8 +125,6 @@ def _migrate_legacy(data: dict) -> dict:
         data["dark_periods"] = []
     if "timezone" not in data:
         data["timezone"] = "Europe/Copenhagen"
-    if "allowed_hosts" not in data:
-        data["allowed_hosts"] = ["*"]
     if "language" not in data:
         data["language"] = "da"
     if "healthchecks_url" not in data:
@@ -169,7 +166,6 @@ def load_config() -> AppConfig:
         ntp=NtpConfig(**ntp_data),
         dark_periods=data.get("dark_periods", []),
         timezone=data.get("timezone", "Europe/Copenhagen"),
-        allowed_hosts=data.get("allowed_hosts", ["*"]),
         language=data.get("language", "da"),
         healthchecks_url=data.get("healthchecks_url", ""),
     )

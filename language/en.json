@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "locale": "en",
   "name": "English",
   "nativeName": "English",
@@ -107,8 +107,6 @@
     "settings.title":                  "Settings",
     "settings.timezone":               "Timezone",
     "settings.timezone.hint":          "IANA timezone — e.g. Europe/Copenhagen, UTC, America/New_York",
-    "settings.hosts":                  "Known hostnames",
-    "settings.hosts.hint":             "One hostname per line. For reference only — the service accepts all connections.",
     "settings.healthchecks.url":       "Healthchecks.io ping URL",
     "settings.healthchecks.url.hint":  "Optional. Pinged after every successful upload; /fail is pinged on error. See healthchecks.io.",
     "settings.save":                   "Save settings",

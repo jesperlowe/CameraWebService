@@ -47,7 +47,6 @@
     }
   ],
   "timezone": "Europe/Copenhagen",
-  "allowed_hosts": ["*"],
   "language": "da",
   "healthchecks_url": ""
 }
