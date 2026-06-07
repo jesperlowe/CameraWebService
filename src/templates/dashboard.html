@@ -23,6 +23,19 @@
 </div>
 {% endif %}
 
+<!-- Opdatering tilgængelig -->
+{% if state['update']['available'] %}
+<div class="alert" style="background:rgba(59,130,246,0.08);border-color:rgba(59,130,246,0.25);color:var(--text);margin-bottom:20px;">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;display:inline;margin-right:6px;vertical-align:middle;color:var(--accent);">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+  </svg>
+  {{ _t('update.available') }} <strong>v{{ state['update']['latest'] }}</strong> ({{ _t('update.current') }} v{{ APP_VERSION }})
+  {% if state['update']['url'] %}
+  — <a href="{{ state['update']['url'] }}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">{{ _t('update.changelog') }}</a>
+  {% endif %}
+</div>
+{% endif %}
+
 <!-- Mørketid-banner -->
 {% if state.dark %}
 <div class="alert" style="background:rgba(251,191,36,0.1);border-color:rgba(251,191,36,0.3);color:#fbbf24;margin-bottom:20px;">
