@@ -78,7 +78,7 @@ state = {
     "dark_reason": "",
     "cameras": {},   # {cam_id: {last_upload, last_error, name, last_image}}
     "last_error": "-",
-    "update": {"available": False, "latest": None, "url": None, "checked_at": 0.0},
+    "update": {"available": False, "latest": None, "url": None, "checked_at": None},
 }
 
 # Per-camera next-fire time (monotonic seconds)
@@ -682,9 +682,11 @@ def scheduler_loop():
                 if not ntp_result["ok"]:
                     logger.warning("NTP-tjek fejlede: %s", ntp_result.get("error"))
 
-            # Update check — at most once every _UPDATE_CHECK_INTERVAL seconds
+            # Update check — runs promptly on startup, then at most once every
+            # _UPDATE_CHECK_INTERVAL seconds (checked_at is None until the first run)
             now_mono = time.monotonic()
-            if now_mono - state["update"].get("checked_at", 0.0) >= _UPDATE_CHECK_INTERVAL:
+            checked_at = state["update"].get("checked_at")
+            if checked_at is None or now_mono - checked_at >= _UPDATE_CHECK_INTERVAL:
                 result = check_for_update(APP_VERSION, GITHUB_REPO)
                 state["update"] = {**result, "checked_at": now_mono}
                 if result["available"]:
