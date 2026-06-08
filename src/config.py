@@ -6,7 +6,7 @@ from pathlib import Path
 
 import bcrypt
 
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.2.1"
 
 # GitHub "owner/repo" used to check for newer releases (see src/update_check.py)
 GITHUB_REPO = "jesperlowe/CameraWebService"
